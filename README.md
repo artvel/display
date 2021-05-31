@@ -1,4 +1,4 @@
-##Mini Display controller
+## Mini Display controller
 Currently supported displays:
 | Completion   |      Device      | 
 |----------|:-------------:|
@@ -7,7 +7,7 @@ Currently supported displays:
 
 Other Qnap or Asustor should be compatible too I think.
 
-PR are welcome!
+PR's are welcome!
 Use it as you please.
 
 Have fun.
