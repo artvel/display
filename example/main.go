@@ -1,7 +1,7 @@
 package main
 
 import (
-	"awesomeProject/display"
+	"github.com/artvel/display"
 	"fmt"
 	"time"
 )
