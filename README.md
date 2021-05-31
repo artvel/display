@@ -41,6 +41,11 @@ func panicCheck(err error){
 }
 ```
 
+### Todo
+- cleanup code
+- impl. sync to prevent read and write from cutting across
+- add more implementation of other displays
+
 PR's are welcome!
 Use it as you please.
 
