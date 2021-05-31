@@ -12,7 +12,7 @@ Other Qnap or Asustor should be compatible too I think.
 package main
 
 import (
-	"awesomeProject/display"
+	"github.com/artvel/display"
 	"fmt"
 	"time"
 )
