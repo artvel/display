@@ -5,6 +5,10 @@ Currently supported displays:
 | 100% |  Qnap TVS-x72XT |
 | 100% |  Asustor AS6404T | 
 
+![Qnap](res/qnap.jpg?raw=true "Qnap")
+----------------------------------------------
+![Asustor](res/asustor.jpg?raw=true "Asustor")
+
 Other Qnap or Asustor devices should be compatible too I think.
 
 ### Example usage:
