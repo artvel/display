@@ -1,14 +1,13 @@
 package main
 
 import (
-	"github.com/artvel/display"
 	"fmt"
+	"github.com/artvel/display"
 	"time"
 )
 
 func main() {
-	l, err := display.NewQnapLCD("")
-	panicCheck(err)
+	l := display.Find()
 	defer func() {
 		panicCheck(l.Close())
 	}()

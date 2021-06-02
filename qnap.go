@@ -12,27 +12,43 @@ import (
 	"time"
 )
 
-type qnap struct {
-	tty  string
-	con  io.ReadWriteCloser
-	open bool
+type (
+	btnAction struct {
+		btn      int
+		released bool
+	}
+	qnap struct {
+		tty           string
+		con           io.ReadWriteCloser
+		open          bool
+		keepListening bool
 
-	lastFlush time.Time
-	writeC    chan []byte
-	btnC      chan []byte
+		// to keep track of the 10ms
+		// we have to wait for to be flushed
+		lastFlush time.Time
 
-	released    []byte
-	upPressed   []byte
-	downPressed []byte
-	bothPressed []byte
+		btnActionC chan btnAction
 
-	cmdBtn     []byte
-	cmdEnable  []byte
-	cmdDisable []byte
-	cmdWrite   []byte
-	cmdInit    []byte
-	cmdRdy     []byte
-}
+		waitForFlush time.Duration
+
+		// keep the fields packed inside the struct
+		// to simplify the implementation of other
+		// displays on the package level
+		// and to prevent from reserving memory for
+		// unused package fields
+		released    []byte
+		upPressed   []byte
+		downPressed []byte
+		bothPressed []byte
+
+		cmdBtn     []byte
+		cmdEnable  []byte
+		cmdDisable []byte
+		cmdWrite   []byte
+		cmdInit    []byte
+		cmdRdy     []byte
+	}
+)
 
 /**
 Supports the display of the following devices:
@@ -48,7 +64,10 @@ func NewQnapLCD(tty string) (LCD, error) {
 	}
 	cmdBtn := []byte{83, 5, 0}
 	q := &qnap{
-		tty:         tty,
+		tty: tty,
+
+		waitForFlush: 135 * time.Millisecond,
+
 		released:    append(cmdBtn, 0),
 		upPressed:   append(cmdBtn, 1),
 		downPressed: append(cmdBtn, 2),
@@ -144,18 +163,25 @@ func (q *qnap) Write(line Line, txt string) error {
 	//TODO improve this line
 	cnt := append(q.cmdWrite, []byte(fmt.Sprintf("%s%s", h(fmt.Sprintf("4d0c0%d10", line)), txt))...)
 
-	q.wait10MillisForSureBetweenWrites()
+	q.waitForFlushBetweenWrites()
 
 	n, err := q.con.Write(cnt)
-
+	if err != nil {
+		return err
+	}
 	if n != len(cnt) {
 		return ErrMsgSizeMismatch
 	}
-	return err
+	q.waitForDisplaying()
+	return nil
 }
 
-func (q *qnap) wait10MillisForSureBetweenWrites() {
-	timeDiff := q.lastFlush.Add(DefaultDelayBetweenWrites).Sub(time.Now())
+func (q *qnap) waitForDisplaying() {
+	time.Sleep(q.waitForFlush)
+}
+
+func (q *qnap) waitForFlushBetweenWrites() {
+	timeDiff := q.lastFlush.Add(q.waitForFlush).Sub(time.Now())
 	if timeDiff > 0 {
 		time.Sleep(timeDiff)
 	}
@@ -166,16 +192,22 @@ func (q *qnap) Listen(l func(btn int, released bool) bool) {
 	if !q.open {
 		return
 	}
+
+	q.keepListening = true
+	q.btnActionC = make(chan btnAction, 100)
+	go q.btnActionRoutine(l)
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("display panic while listening")
 		}
+		close(q.btnActionC)
 	}()
 	var lastBtn = 0
-	for {
+	for q.open && q.keepListening {
 		res := make([]byte, 4)
 		n, err := q.con.Read(res)
-		if err != nil {
+		if err != nil || !q.open || !q.keepListening {
 			return
 		}
 		if n != len(res) {
@@ -183,31 +215,35 @@ func (q *qnap) Listen(l func(btn int, released bool) bool) {
 		}
 		res = q.ensureOrder(res)
 		if bytes.Equal(res, q.released) {
-			if !l(lastBtn, true) {
-				return
-			}
+			q.btnActionC <- btnAction{btn: lastBtn, released: true}
 			lastBtn = 0
 		} else if bytes.Equal(res, q.upPressed) {
 			if lastBtn == 3 {
 				continue
 			}
 			lastBtn = 1
-			if !l(lastBtn, false) {
-				return
-			}
+			q.btnActionC <- btnAction{btn: lastBtn, released: false}
 		} else if bytes.Equal(res, q.downPressed) {
 			if lastBtn == 3 {
 				continue
 			}
 			lastBtn = 2
-			if !l(lastBtn, false) {
-				return
-			}
+			q.btnActionC <- btnAction{btn: lastBtn, released: false}
 		} else if bytes.Equal(res, q.bothPressed) {
 			lastBtn = 3
-			if !l(lastBtn, false) {
-				return
-			}
+			q.btnActionC <- btnAction{btn: lastBtn, released: false}
+		}
+	}
+}
+
+func (q *qnap) btnActionRoutine(l func(btn int, released bool) bool) {
+	for q.open && q.keepListening {
+		btnAction, ok := <-q.btnActionC
+		if !ok {
+			return
+		}
+		if q.keepListening = l(btnAction.btn, btnAction.released); !q.keepListening {
+			return
 		}
 	}
 }

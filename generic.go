@@ -38,24 +38,26 @@ const (
 	LineOne Line = 0
 	LineTwo Line = 1
 	// ReadTimeout to break probing
-	ReadTimeout               = 300 * time.Millisecond
+	ReadTimeout               = 400 * time.Millisecond
 	DefaultDelayBetweenWrites = 10 * time.Millisecond
 
 	DefaultTTy = "/dev/ttyS1"
 )
 
 // Factory function to probe the correct implementation
-func FindLED() LCD {
+func Find() LCD {
 	var (
 		lcd LCD
 		err error
 	)
 	lcd, err = NewAsustorLCD("")
 	if err == nil {
+		log.Println("Using Asustor LCD")
 		return lcd
 	} else {
 		lcd, err = NewQnapLCD("")
 		if err == nil {
+			log.Println("Using Qnap LCD")
 			return lcd
 		} else {
 			log.Println(err)

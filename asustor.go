@@ -3,7 +3,7 @@ Implements the serial communication protocol for the ASUSTOR
 LCD display. This includes controlling and updating and listening for
 button presses.
 
-asustorLCD data format:
+asustor data format:
 
 	MESSAGE_TYPE DATA_LENGTH COMMAND [[DATA]...] [CRC]
 */
@@ -14,7 +14,6 @@ import (
 	"errors"
 	"github.com/chmorgan/go-serial2/serial"
 	"io"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +22,16 @@ import (
 // we hide the struct and its fields
 // to keep the usage as simple as possible
 // through the LCD interface
-type asustorLCD struct {
-	con   io.ReadWriteCloser
-	readC chan []byte
-	btnC  chan []byte
-	tty   string
-	open  bool
+type asustor struct {
+	con           io.ReadWriteCloser
+	readC         chan []byte
+	btnC          chan []byte
+	tty           string
+	open          bool
+	keepListening bool
 
+	// to keep track of the 10ms
+	// we have to wait for to be flushed
 	lastFlush time.Time
 
 	// keep the fields packed inside the struct
@@ -62,7 +64,7 @@ func NewAsustorLCD(tty string) (LCD, error) {
 	}
 	cmdByte := byte(0xF0)
 	replyByte := byte(0xF1)
-	m := &asustorLCD{
+	m := &asustor{
 		tty:   tty,
 		readC: make(chan []byte, 20),
 		btnC:  make(chan []byte, 20),
@@ -70,23 +72,10 @@ func NewAsustorLCD(tty string) (LCD, error) {
 		cmdByte:   cmdByte,
 		replyByte: replyByte,
 
-		// TODO(mafredri): Figure out if there are even more commands, and what,
-		// if anything, modifying the argument value does.
-		// DisplayStatus is used to establish (initial) sync, it is sent
-		// repeatedly until the correct response is received. It is also
-		// used as an occasional probe that everything is OK?
-		//
-		// TODO(mafredri): Try to verify if this message is correct
-		// and/or if it has a dual purpose.
 		cmdDisplayStatus: []byte{cmdByte, 1, 17, 1},
-		// DisplayOff turns the display off.
-		cmdDisplayOff: []byte{cmdByte, 1, 17, 0},
-		// ClearDisplay clears the current text from the display.
-		// TODO(ave) no need for this, can't think of a case... remove or implement Clear on interface?
-		cmdClearDisplay: []byte{cmdByte, 1, 18, 1},
-		// DisplayOn turns the display on.
-		// TODO(mafredri): Verify if this is the only purpose?
-		cmdDisplayOn: []byte{cmdByte, 1, 34, 0},
+		cmdDisplayOff:    []byte{cmdByte, 1, 17, 0},
+		cmdClearDisplay:  []byte{cmdByte, 1, 18, 1},
+		cmdDisplayOn:     []byte{cmdByte, 1, 34, 0},
 
 		cmdBtn: []byte{cmdByte, 1, 128},
 		cmdRdy: []byte{replyByte, 1},
@@ -104,7 +93,7 @@ func NewAsustorLCD(tty string) (LCD, error) {
 	return m, err
 }
 
-func (a *asustorLCD) Open() error {
+func (a *asustor) Open() error {
 	if a.open {
 		return nil
 	}
@@ -160,22 +149,22 @@ func (a *asustorLCD) Open() error {
 	return nil
 }
 
-func (a *asustorLCD) isReady() bool {
+func (a *asustor) isReady() bool {
 	res := make([]byte, 5)
 	i, er := a.readWithTimeout(res)
 	if er != nil || i != len(res) {
-		log.Println("NO", res)
+		//log.Println("NO", res)
 		return false
 	}
 	if bytes.HasPrefix(res, a.cmdRdy) {
-		log.Println("YES", res)
+		//log.Println("YES", res)
 		return true
 	}
-	log.Println("NO", res)
+	//log.Println("NO", res)
 	return false
 }
 
-func (a *asustorLCD) readWithTimeout(res []byte) (i int, err error) {
+func (a *asustor) readWithTimeout(res []byte) (i int, err error) {
 	respReceived := false
 	waiter := sync.WaitGroup{}
 	waiter.Add(2)
@@ -201,7 +190,7 @@ func (a *asustorLCD) readWithTimeout(res []byte) (i int, err error) {
 	return
 }
 
-func (a *asustorLCD) Enable(yes bool) error {
+func (a *asustor) Enable(yes bool) error {
 	if !a.open {
 		return ErrClosed
 	}
@@ -212,14 +201,21 @@ func (a *asustorLCD) Enable(yes bool) error {
 	}
 }
 
-func (a *asustorLCD) Listen(l func(btn int, released bool) bool) {
+func (a *asustor) Listen(l func(btn int, released bool) bool) {
 	if !a.open {
 		return
 	}
+	a.keepListening = true
 	for a.open {
 		res := <-a.btnC
-		if !l(int(res[3]), true) {
+		if !a.open {
 			return
+		}
+		if a.keepListening {
+			if !l(int(res[3]), true) {
+				a.keepListening = false
+				return
+			}
 		}
 	}
 }
@@ -227,7 +223,7 @@ func (a *asustorLCD) Listen(l func(btn int, released bool) bool) {
 // Write messages to the display. Note that checksum is omitted,
 // this is handled by the implementation.
 // If text is longer than supported, it will be cut.
-func (a *asustorLCD) Write(line Line, text string) error {
+func (a *asustor) Write(line Line, text string) error {
 	if !a.open {
 		return ErrClosed
 	}
@@ -241,19 +237,20 @@ func (a *asustorLCD) Write(line Line, text string) error {
 	return err
 }
 
-func (a *asustorLCD) isMsgSent() bool {
-	if a.open {
-		res := <-a.readC
-		if bytes.Equal(res, a.cmdMsgSentCheck) {
-			log.Println("msg check OK!")
-			return true
-		}
+func (a *asustor) isMsgSent() bool {
+	res := <-a.readC
+	if !a.open {
+		return false
 	}
-	log.Println("msg check Not OK!")
+	if bytes.Equal(res, a.cmdMsgSentCheck) {
+		//log.Println("msg check OK!")
+		return true
+	}
+	//log.Println("msg check Not OK!")
 	return false
 }
 
-func (a *asustorLCD) makemsg(msg []byte) []byte {
+func (a *asustor) makemsg(msg []byte) []byte {
 	data := make([]byte, len(msg), len(msg)+1)
 	copy(data, msg)
 	data = append(data, checksum(data))
@@ -262,16 +259,18 @@ func (a *asustorLCD) makemsg(msg []byte) []byte {
 
 // read reads asynchronously from the serial port
 // and transmits messages on the read or btn channel.
-func (a *asustorLCD) read() {
+func (a *asustor) read() {
 	for a.open {
 		res := make([]byte, 5)
-		i, er := a.con.Read(res)
-		if er != nil {
+		_, er := a.con.Read(res)
+		if er != nil || !a.open {
 			return
 		}
-		log.Println("read", i, er, res)
+		//log.Println("read", i, er, res)
 		if bytes.HasPrefix(res, a.cmdBtn) {
-			a.btnC <- res
+			if a.keepListening {
+				a.btnC <- res
+			}
 		} else {
 			a.readC <- res
 		}
@@ -279,10 +278,10 @@ func (a *asustorLCD) read() {
 }
 
 // write synchronously to the serial port.
-func (a *asustorLCD) flush(data []byte) error {
+func (a *asustor) flush(data []byte) error {
 	data = a.makemsg(data)
 
-	a.wait10MillisForSureBetweenWrites()
+	a.waitForFlushBetweenWrites()
 
 	n, err := a.con.Write(data)
 	if err != nil {
@@ -294,7 +293,7 @@ func (a *asustorLCD) flush(data []byte) error {
 	return err
 }
 
-func (a *asustorLCD) wait10MillisForSureBetweenWrites() {
+func (a *asustor) waitForFlushBetweenWrites() {
 	timeDiff := a.lastFlush.Add(DefaultDelayBetweenWrites).Sub(time.Now())
 	if timeDiff > 0 {
 		time.Sleep(timeDiff)
@@ -302,8 +301,10 @@ func (a *asustorLCD) wait10MillisForSureBetweenWrites() {
 	a.lastFlush = time.Now()
 }
 
-func (a *asustorLCD) forceClose() error {
+func (a *asustor) forceClose() error {
 	a.open = false
+	a.readC <- []byte{}
+	a.btnC <- []byte{}
 	if a.con == nil {
 		return nil
 	}
@@ -311,7 +312,7 @@ func (a *asustorLCD) forceClose() error {
 }
 
 // Close the serial connection.
-func (a *asustorLCD) Close() error {
+func (a *asustor) Close() error {
 	if !a.open {
 		return nil
 	}
@@ -325,7 +326,7 @@ func checksum(b []byte) (s byte) {
 	return s
 }
 
-func (a *asustorLCD) strToBytes(line Line, text string) (raw []byte) {
+func (a *asustor) strToBytes(line Line, text string) (raw []byte) {
 	if len(text) > 16 {
 		text = text[0:16]
 	}
