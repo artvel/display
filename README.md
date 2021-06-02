@@ -23,9 +23,9 @@ import (
 
 func main() {
 	l := display.Find()
-    defer func() {
-        panicCheck(l.Close())
-    }()
+	defer func() {
+		panicCheck(l.Close())
+	}()
 	panicCheck(l.Write(0, "The first line?"))
 	panicCheck(l.Write(1, "Hello second line"))
 	go l.Listen(func(btn int, released bool) bool {
