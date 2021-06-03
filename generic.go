@@ -3,21 +3,21 @@ package display
 import (
 	"errors"
 	"log"
-	"time"
+	"strings"
 )
 
 type (
 	LCD interface {
-		// Listen blocking for button events.
-		// Please note, not all devices support released=true.
-		Listen(l func(btn int, released bool) bool)
-		// Enable(turn on) or disable(turn off) the display.
-		Enable(yes bool) error
+		// Reopen the instance after a Close call.
+		Open() error
 		// Write a string message on line one or two.
 		// If text is longer than supported, it will be cut.
 		Write(line Line, text string) error
-		// Reopen the instance after a Close call.
-		Open() error
+		// Enable(turn on) or disable(turn off) the display.
+		Enable(yes bool) error
+		// Listen blocking for button events.
+		// Please note, not all devices support released=true.
+		Listen(l func(btn int, released bool) bool)
 		// Close the connection to the display.
 		Close() error
 	}
@@ -35,13 +35,9 @@ var (
 )
 
 const (
-	LineOne Line = 0
-	LineTwo Line = 1
-	// ReadTimeout to break probing
-	ReadTimeout               = 400 * time.Millisecond
-	DefaultDelayBetweenWrites = 10 * time.Millisecond
-
-	DefaultTTy = "/dev/ttyS1"
+	LineOne    Line = 0
+	LineTwo    Line = 1
+	DefaultTTy      = "/dev/ttyS1"
 )
 
 // Factory function to probe the correct implementation
@@ -70,8 +66,27 @@ func Find() LCD {
  Dummy functions to use as an actual display.
  As the display is mostly a nice to have feature anyways.
 */
-func (d *dummy) Listen(l func(btn int, released bool) bool) {}
-func (d *dummy) Enable(yes bool) error                      { return nil }
-func (d *dummy) Write(line Line, text string) error         { return nil }
 func (d *dummy) Open() error                                { return nil }
+func (d *dummy) Write(line Line, text string) error         { return nil }
+func (d *dummy) Enable(yes bool) error                      { return nil }
+func (d *dummy) Listen(l func(btn int, released bool) bool) {}
 func (d *dummy) Close() error                               { return nil }
+
+func prepareTxt(txt string) string {
+	l := len(txt)
+	if l > 16 {
+		txt = txt[0:16]
+	} else if l < 16 {
+		txt += strings.Repeat(" ", 16-l)
+	}
+	return txt
+}
+
+func Progress(perc int) string {
+	chars := percentOf(16, 100, perc)
+	return strings.Repeat("\n", chars) + strings.Repeat("-", 16-chars)
+}
+
+func percentOf(maxVal, maxPercent, currentPercent int) int {
+	return (maxVal * currentPercent) / maxPercent
+}

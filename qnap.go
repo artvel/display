@@ -7,7 +7,6 @@ import (
 	"github.com/chmorgan/go-serial2/serial"
 	"io"
 	"log"
-	"strings"
 	"sync"
 	"time"
 )
@@ -134,32 +133,11 @@ func (q *qnap) init() error {
 	}
 }
 
-func (q *qnap) Enable(yes bool) error {
-	if !q.open {
-		return ErrClosed
-	}
-	if yes {
-		_, err := q.con.Write(q.cmdEnable)
-		return err
-	} else {
-		_, err := q.con.Write(q.cmdDisable)
-		return err
-	}
-}
-
 func (q *qnap) Write(line Line, txt string) error {
 	if !q.open {
 		return ErrClosed
 	}
-	if len(txt) > 16 {
-		//cut if longer
-		txt = txt[:16]
-	} else {
-		//fill rest empty
-		for len(txt) < 16 {
-			txt += strings.Repeat(" ", 16-len(txt))
-		}
-	}
+	txt = prepareTxt(txt)
 	//TODO improve this line
 	cnt := append(q.cmdWrite, []byte(fmt.Sprintf("%s%s", h(fmt.Sprintf("4d0c0%d10", line)), txt))...)
 
@@ -174,6 +152,19 @@ func (q *qnap) Write(line Line, txt string) error {
 	}
 	q.waitForDisplaying()
 	return nil
+}
+
+func (q *qnap) Enable(yes bool) error {
+	if !q.open {
+		return ErrClosed
+	}
+	if yes {
+		_, err := q.con.Write(q.cmdEnable)
+		return err
+	} else {
+		_, err := q.con.Write(q.cmdDisable)
+		return err
+	}
 }
 
 func (q *qnap) waitForDisplaying() {
@@ -288,7 +279,7 @@ func (q *qnap) readWithTimeout(res []byte) (i int, err error) {
 			waiter.Done()
 		}
 	}()
-	time.AfterFunc(ReadTimeout, func() {
+	time.AfterFunc(300*time.Millisecond, func() {
 		if respReceived {
 			return
 		}

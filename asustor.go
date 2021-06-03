@@ -14,7 +14,7 @@ import (
 	"errors"
 	"github.com/chmorgan/go-serial2/serial"
 	"io"
-	"strings"
+	"log"
 	"sync"
 	"time"
 )
@@ -29,6 +29,10 @@ type asustor struct {
 	tty           string
 	open          bool
 	keepListening bool
+
+	m sync.Mutex
+
+	retry byte
 
 	// to keep track of the 10ms
 	// we have to wait for to be flushed
@@ -47,7 +51,15 @@ type asustor struct {
 	cmdDisplayOn     []byte
 	cmdBtn           []byte
 	cmdRdy           []byte
-	cmdMsgSentCheck  []byte
+
+	cmdOkayCheck []byte
+
+	replyOkayCheck1   []byte
+	replyOkayCheck2   []byte
+	replyOkayCheck3   []byte
+	replyMsgSentCheck []byte
+
+	msgSize uint
 }
 
 /**
@@ -62,12 +74,12 @@ func NewAsustorLCD(tty string) (LCD, error) {
 	if tty == "" {
 		tty = DefaultTTy
 	}
-	cmdByte := byte(0xF0)
-	replyByte := byte(0xF1)
+	cmdByte := byte(240)
+	replyByte := byte(241)
 	m := &asustor{
 		tty:   tty,
-		readC: make(chan []byte, 20),
-		btnC:  make(chan []byte, 20),
+		readC: make(chan []byte, 100),
+		btnC:  make(chan []byte, 100),
 
 		cmdByte:   cmdByte,
 		replyByte: replyByte,
@@ -76,11 +88,15 @@ func NewAsustorLCD(tty string) (LCD, error) {
 		cmdDisplayOff:    []byte{cmdByte, 1, 17, 0},
 		cmdClearDisplay:  []byte{cmdByte, 1, 18, 1},
 		cmdDisplayOn:     []byte{cmdByte, 1, 34, 0},
+		cmdBtn:           []byte{cmdByte, 1, 128},
 
-		cmdBtn: []byte{cmdByte, 1, 128},
-		cmdRdy: []byte{replyByte, 1},
+		replyOkayCheck1:   []byte{replyByte, 1, 17, 0, 3},
+		replyOkayCheck2:   []byte{replyByte, 1, 17, 4, 7},
+		replyOkayCheck3:   []byte{replyByte, 1, 39, 4, 29},
+		replyMsgSentCheck: []byte{replyByte, 1, 39, 0, 25},
+
+		msgSize: 5,
 	}
-	m.cmdMsgSentCheck = append(m.cmdRdy, 39, 0, 25)
 
 	// initial check if we can connect to a device
 	// that works our way
@@ -94,6 +110,9 @@ func NewAsustorLCD(tty string) (LCD, error) {
 }
 
 func (a *asustor) Open() error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	if a.open {
 		return nil
 	}
@@ -106,91 +125,47 @@ func (a *asustor) Open() error {
 		BaudRate:        115200,
 		DataBits:        8,
 		StopBits:        1,
-		MinimumReadSize: 5,
-		Rs485RxDuringTx: true,
+		MinimumReadSize: 1,
 	})
 	if err != nil {
+		log.Println(err)
 		return err
 	}
-	err = a.flush(a.cmdDisplayStatus)
+
+	a.open = true
+	go a.read()
+	return a.establish()
+}
+
+func (a *asustor) establish() error {
+	err := a.flush(a.cmdDisplayStatus)
 	if err != nil {
 		_ = a.con.Close()
+		_ = a.forceClose()
 		return err
 	}
-
-	// to ensure that we are not stepping into it while
-	// the bios is using it, we keep trying a couple of times
-	// until the beginning of the read message is equal cmdRdy
-	if !a.isReady() {
-		err = a.flush(a.cmdClearDisplay)
-		if err != nil {
-			_ = a.con.Close()
-			return err
-		}
-		if !a.isReady() {
-			err = a.flush(a.cmdDisplayStatus)
-			if err != nil {
-				_ = a.con.Close()
-				return err
-			}
-			if !a.isReady() {
-				_ = a.con.Close()
-				return ErrDisplayNotWorking
-			}
-		}
+	if !a.responseEqual(a.replyOkayCheck1, a.replyOkayCheck2, a.replyOkayCheck3) {
+		_ = a.con.Close()
+		_ = a.forceClose()
+		return ErrDisplayNotWorking
 	}
-
-	// if we reach this point, it will most likely
-	// work as indented as we received feedback after writing
-	a.open = true
-
-	go a.read()
-
 	return nil
 }
 
-func (a *asustor) isReady() bool {
-	res := make([]byte, 5)
-	i, er := a.readWithTimeout(res)
-	if er != nil || i != len(res) {
-		//log.Println("NO", res)
-		return false
-	}
-	if bytes.HasPrefix(res, a.cmdRdy) {
-		//log.Println("YES", res)
-		return true
-	}
-	//log.Println("NO", res)
-	return false
-}
+// Write messages to the display. Note that checksum is omitted,
+// this is handled by the implementation.
+// If text is longer than supported, it will be cut.
+func (a *asustor) Write(line Line, text string) error {
+	a.m.Lock()
+	defer a.m.Unlock()
 
-func (a *asustor) readWithTimeout(res []byte) (i int, err error) {
-	respReceived := false
-	waiter := sync.WaitGroup{}
-	waiter.Add(2)
-	time.AfterFunc(ReadTimeout, func() {
-		if respReceived {
-			return
-		}
-		_ = a.forceClose()
-		err = ErrDisplayNotWorking
-		waiter.Done()
-	})
-	go func() {
-		i, err = a.con.Read(res)
-		if err == nil {
-			respReceived = true
-			waiter.Done()
-			waiter.Done()
-		} else {
-			waiter.Done()
-		}
-	}()
-	waiter.Wait()
-	return
+	return a.write(a.strToBytes(line, text))
 }
 
 func (a *asustor) Enable(yes bool) error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
 	if !a.open {
 		return ErrClosed
 	}
@@ -220,60 +195,83 @@ func (a *asustor) Listen(l func(btn int, released bool) bool) {
 	}
 }
 
-// Write messages to the display. Note that checksum is omitted,
-// this is handled by the implementation.
-// If text is longer than supported, it will be cut.
-func (a *asustor) Write(line Line, text string) error {
+func (a *asustor) write(msg []byte) error {
 	if !a.open {
 		return ErrClosed
 	}
-	err := a.flush(a.strToBytes(line, text))
+	err := a.flush(msg)
 	if err != nil {
 		return err
 	}
-	if !a.isMsgSent() {
-		return ErrDisplayNotWorking
+	if !a.responseEqual(a.replyMsgSentCheck) {
+		if a.retry > 10 {
+			return ErrDisplayNotWorking
+		} else {
+			a.retry++
+			//log.Println("try", a.retry)
+			return a.write(msg)
+		}
+	} else {
+		a.retry = 0
 	}
 	return err
 }
 
-func (a *asustor) isMsgSent() bool {
-	res := <-a.readC
-	if !a.open {
-		return false
-	}
-	if bytes.Equal(res, a.cmdMsgSentCheck) {
-		//log.Println("msg check OK!")
-		return true
-	}
-	//log.Println("msg check Not OK!")
-	return false
-}
-
-func (a *asustor) makemsg(msg []byte) []byte {
-	data := make([]byte, len(msg), len(msg)+1)
-	copy(data, msg)
-	data = append(data, checksum(data))
-	return data
+func (a *asustor) responseEqual(checks ...[]byte) bool {
+	ch := make(chan bool, 1)
+	go func() {
+		select {
+		case res := <-a.readC:
+			if !a.open {
+				ch <- false
+				return
+			}
+			for _, check := range checks {
+				if bytes.Equal(res, check) {
+					//log.Println("msg check OK!")
+					ch <- true
+					return
+				}
+			}
+			ch <- false
+		case <-time.After(40 * time.Millisecond):
+			ch <- false
+		}
+	}()
+	return <-ch
 }
 
 // read reads asynchronously from the serial port
 // and transmits messages on the read or btn channel.
 func (a *asustor) read() {
+	buf := bytes.Buffer{}
+	startFound := false
+	res := make([]byte, a.msgSize)
 	for a.open {
-		res := make([]byte, 5)
-		_, er := a.con.Read(res)
+		i, er := a.con.Read(res)
 		if er != nil || !a.open {
 			return
 		}
-		//log.Println("read", i, er, res)
-		if bytes.HasPrefix(res, a.cmdBtn) {
-			if a.keepListening {
-				a.btnC <- res
+		for c := 0; c < i; c++ {
+			if startFound || res[c] == a.replyByte || res[c] == a.cmdByte {
+				startFound = true
+				buf.WriteByte(res[c])
+				if buf.Len() == 5 {
+					startFound = false
+					a.pass(buf.Bytes())
+					buf.Reset()
+				}
 			}
-		} else {
-			a.readC <- res
 		}
+	}
+}
+
+func (a *asustor) pass(res []byte) {
+	//log.Println("read", res)
+	if bytes.HasPrefix(res, a.cmdBtn) {
+		a.btnC <- res
+	} else {
+		a.readC <- res
 	}
 }
 
@@ -284,39 +282,30 @@ func (a *asustor) flush(data []byte) error {
 	a.waitForFlushBetweenWrites()
 
 	n, err := a.con.Write(data)
+
 	if err != nil {
 		return err
 	}
+
 	if n != len(data) {
 		return errors.New("written size does not match")
 	}
 	return err
 }
 
+func (a *asustor) makemsg(msg []byte) []byte {
+	data := make([]byte, len(msg), len(msg)+1)
+	copy(data, msg)
+	data = append(data, checksum(data))
+	return data
+}
+
 func (a *asustor) waitForFlushBetweenWrites() {
-	timeDiff := a.lastFlush.Add(DefaultDelayBetweenWrites).Sub(time.Now())
+	timeDiff := a.lastFlush.Add(10 * time.Millisecond).Sub(time.Now())
 	if timeDiff > 0 {
 		time.Sleep(timeDiff)
 	}
 	a.lastFlush = time.Now()
-}
-
-func (a *asustor) forceClose() error {
-	a.open = false
-	a.readC <- []byte{}
-	a.btnC <- []byte{}
-	if a.con == nil {
-		return nil
-	}
-	return a.con.Close()
-}
-
-// Close the serial connection.
-func (a *asustor) Close() error {
-	if !a.open {
-		return nil
-	}
-	return a.forceClose()
 }
 
 func checksum(b []byte) (s byte) {
@@ -326,12 +315,28 @@ func checksum(b []byte) (s byte) {
 	return s
 }
 
-func (a *asustor) strToBytes(line Line, text string) (raw []byte) {
-	if len(text) > 16 {
-		text = text[0:16]
+func (a *asustor) strToBytes(line Line, text string) []byte {
+	return a.createMsg(line, []byte(prepareTxt(text)))
+}
+
+func (a *asustor) createMsg(line Line, text []byte) []byte {
+	return append([]byte{a.cmdByte, 0x12, 0x27, byte(line), byte(0)}, text...)
+}
+
+// Close the serial connection.
+func (a *asustor) Close() error {
+	a.m.Lock()
+	defer a.m.Unlock()
+
+	if !a.open {
+		return nil
 	}
-	if len(text) < 16 {
-		text += strings.Repeat(" ", 16-len(text))
-	}
-	return append([]byte{a.cmdByte, 0x12, 0x27, byte(line), byte(0)}, []byte(text)...)
+	return a.forceClose()
+}
+
+func (a *asustor) forceClose() error {
+	a.open = false
+	a.readC <- []byte{}
+	a.btnC <- []byte{}
+	return a.con.Close()
 }

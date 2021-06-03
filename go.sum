@@ -1,0 +1,4 @@
+github.com/chmorgan/go-serial2 v0.0.0-20190806182038-472d60f85d9b h1:Vemz1uyRo0f6tmvejKITK4A6n+oJ1VCrTbwgWykhlnw=
+github.com/chmorgan/go-serial2 v0.0.0-20190806182038-472d60f85d9b/go.mod h1:wzvH8q2C45iVM1J7xUjU68vNSgkxzwoeFRHkLJi0cSk=
+golang.org/x/sys v0.0.0-20210603125802-9665404d3644 h1:CA1DEQ4NdKphKeL70tvsWNdT5oFh1lOjihRcEDROi0I=
+golang.org/x/sys v0.0.0-20210603125802-9665404d3644/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
