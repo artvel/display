@@ -59,6 +59,7 @@ func Find() LCD {
 			log.Println(err)
 		}
 	}
+	log.Println("Using Dummy LCD")
 	return DummyLCD
 }
 

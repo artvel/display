@@ -14,7 +14,6 @@ import (
 	"errors"
 	"github.com/chmorgan/go-serial2/serial"
 	"io"
-	"log"
 	"sync"
 	"time"
 )
@@ -54,12 +53,8 @@ type asustor struct {
 
 	cmdOkayCheck []byte
 
-	replyOkayCheck1   []byte
-	replyOkayCheck2   []byte
-	replyOkayCheck3   []byte
+	replyRdy          []byte
 	replyMsgSentCheck []byte
-
-	msgSize uint
 }
 
 /**
@@ -90,12 +85,8 @@ func NewAsustorLCD(tty string) (LCD, error) {
 		cmdDisplayOn:     []byte{cmdByte, 1, 34, 0},
 		cmdBtn:           []byte{cmdByte, 1, 128},
 
-		replyOkayCheck1:   []byte{replyByte, 1, 17, 0, 3},
-		replyOkayCheck2:   []byte{replyByte, 1, 17, 4, 7},
-		replyOkayCheck3:   []byte{replyByte, 1, 39, 4, 29},
+		replyRdy:          []byte{replyByte, 1},
 		replyMsgSentCheck: []byte{replyByte, 1, 39, 0, 25},
-
-		msgSize: 5,
 	}
 
 	// initial check if we can connect to a device
@@ -128,7 +119,6 @@ func (a *asustor) Open() error {
 		MinimumReadSize: 1,
 	})
 	if err != nil {
-		log.Println(err)
 		return err
 	}
 
@@ -144,7 +134,7 @@ func (a *asustor) establish() error {
 		_ = a.forceClose()
 		return err
 	}
-	if !a.responseEqual(a.replyOkayCheck1, a.replyOkayCheck2, a.replyOkayCheck3) {
+	if !a.responseEqual(true, a.replyRdy) {
 		_ = a.con.Close()
 		_ = a.forceClose()
 		return ErrDisplayNotWorking
@@ -203,7 +193,7 @@ func (a *asustor) write(msg []byte) error {
 	if err != nil {
 		return err
 	}
-	if !a.responseEqual(a.replyMsgSentCheck) {
+	if !a.responseEqual(false, a.replyMsgSentCheck) {
 		if a.retry > 10 {
 			return ErrDisplayNotWorking
 		} else {
@@ -217,7 +207,7 @@ func (a *asustor) write(msg []byte) error {
 	return err
 }
 
-func (a *asustor) responseEqual(checks ...[]byte) bool {
+func (a *asustor) responseEqual(hasPrefix bool, checks ...[]byte) bool {
 	ch := make(chan bool, 1)
 	go func() {
 		select {
@@ -227,10 +217,18 @@ func (a *asustor) responseEqual(checks ...[]byte) bool {
 				return
 			}
 			for _, check := range checks {
-				if bytes.Equal(res, check) {
-					//log.Println("msg check OK!")
-					ch <- true
-					return
+				if hasPrefix {
+					if bytes.HasPrefix(res, check) {
+						//log.Println("msg check OK!")
+						ch <- true
+						return
+					}
+				} else {
+					if bytes.Equal(res, check) {
+						//log.Println("msg check OK!")
+						ch <- true
+						return
+					}
 				}
 			}
 			ch <- false
@@ -246,7 +244,7 @@ func (a *asustor) responseEqual(checks ...[]byte) bool {
 func (a *asustor) read() {
 	buf := bytes.Buffer{}
 	startFound := false
-	res := make([]byte, a.msgSize)
+	res := make([]byte, 20)
 	for a.open {
 		i, er := a.con.Read(res)
 		if er != nil || !a.open {
@@ -280,7 +278,6 @@ func (a *asustor) flush(data []byte) error {
 	data = a.makemsg(data)
 
 	a.waitForFlushBetweenWrites()
-
 	n, err := a.con.Write(data)
 
 	if err != nil {
