@@ -34,7 +34,7 @@ func main() {
 		return true
 	})
 	time.Sleep(20 * time.Second) //wait 20sec for testing the button events
-	panicCheck(l.Enable(false)) //disable.. turn of the display
+	panicCheck(l.Enable(false)) //disable.. turn off the display
 	time.Sleep(5 * time.Second)
 }
 
