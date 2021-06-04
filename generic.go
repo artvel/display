@@ -32,12 +32,15 @@ var (
 	ErrClosed            = errors.New("display closed")
 	ErrDisplayNotWorking = errors.New("display not working")
 	ErrMsgSizeMismatch   = errors.New("msg size mismatch")
+
+	filledSquare = string([]byte{0xff})
 )
 
 const (
 	LineOne    Line = 0
 	LineTwo    Line = 1
 	DefaultTTy      = "/dev/ttyS1"
+	c16             = 16
 )
 
 // Factory function to probe the correct implementation
@@ -75,17 +78,17 @@ func (d *dummy) Close() error                               { return nil }
 
 func prepareTxt(txt string) string {
 	l := len(txt)
-	if l > 16 {
-		txt = txt[0:16]
-	} else if l < 16 {
-		txt += strings.Repeat(" ", 16-l)
+	if l > c16 {
+		txt = txt[0:c16]
+	} else if l < c16 {
+		txt += strings.Repeat(" ", c16-l)
 	}
 	return txt
 }
 
 func Progress(perc int) string {
-	chars := percentOf(16, 100, perc)
-	return strings.Repeat("\n", chars) + strings.Repeat("-", 16-chars)
+	chars := percentOf(c16, 100, perc)
+	return strings.Repeat(filledSquare, chars) + strings.Repeat("-", c16-chars)
 }
 
 func percentOf(maxVal, maxPercent, currentPercent int) int {

@@ -2,8 +2,6 @@ package display
 
 import (
 	"bytes"
-	"encoding/hex"
-	"fmt"
 	"github.com/chmorgan/go-serial2/serial"
 	"io"
 	"log"
@@ -138,8 +136,8 @@ func (q *qnap) Write(line Line, txt string) error {
 		return ErrClosed
 	}
 	txt = prepareTxt(txt)
-	//TODO improve this line
-	cnt := append(q.cmdWrite, []byte(fmt.Sprintf("%s%s", h(fmt.Sprintf("4d0c0%d10", line)), txt))...)
+
+	cnt := append(append(q.cmdWrite, 77, 12, byte(line), 16), []byte(txt)...)
 
 	q.waitForFlushBetweenWrites()
 
@@ -289,11 +287,6 @@ func (q *qnap) readWithTimeout(res []byte) (i int, err error) {
 	})
 	waiter.Wait()
 	return
-}
-
-func h(s string) []byte {
-	decoded, _ := hex.DecodeString(s)
-	return decoded
 }
 
 func (q *qnap) Close() error {
